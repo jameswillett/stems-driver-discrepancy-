@@ -1,5 +1,4 @@
-const Papa = require("./papaparse.js");
-const datetime = require('node-datetime');
+const Papa = require('papaparse');
 const prompt = require('prompt');
 const fs = require('fs');
 const testFolder = './csvs'
@@ -7,7 +6,7 @@ const testFolder = './csvs'
 var option = 0;
 
 const menu = [];
-console.log('\033[2J');
+//console.log('\033[2J');
 console.log(`
 +-----------------------------------------+
 THIS IS A PAIN IN MY ASS
@@ -34,31 +33,16 @@ you chose ${menu[result.selection-1].file} with ${result.windowLength} hour wind
 +-----------------------------------------+
 `);
 
-  var file = `./csvs/${menu[result.selection-1].file}`;
+  const file = `./csvs/${menu[result.selection-1].file}`;
   const windowLength = parseInt(result.windowLength);
 
 
-  var content = fs.readFileSync(file, { encoding: 'binary' });
-  const novCsv = Papa.parse(content, {
+
+
+  const content = fs.readFileSync(file, { encoding: 'binary' });
+  const parsedCsv = Papa.parse(content, {
       header: true,
   }).data;
-
-  Array.prototype.contains = function (v) {
-      for(var i = 0; i < this.length; i++) {
-          if(this[i] === v) return true;
-      }
-      return false;
-  };
-
-  Array.prototype.unique = function() {
-      var arr = [];
-      for(var i = 0; i < this.length; i++) {
-          if(!arr.contains(this[i])) {
-              arr.push(this[i]);
-          }
-      }
-      return arr;
-  }
 
   //figures out if weekend (weekend mornings have different guarantee amounts)
   const isWeekend = (day) => {
@@ -66,93 +50,126 @@ you chose ${menu[result.selection-1].file} with ${result.windowLength} hour wind
   }
 
   //list of unique drivers (duh)
-  const uniqueDrivers = novCsv.map(task => {
-    return task.workerName;
-  }).unique()
-
-  //builds driver object
-  const data = uniqueDrivers.map(driver => {
-    return {'name': driver, 'day': []}
+  const uniqueDrivers = new Set();
+  parsedCsv.map(task => {
+    uniqueDrivers.add(task.workerName);
   })
 
-  var workerMonthTotal = []
+  const fillArrayWithNumbers = n => {
+    const arr = Array.apply(null, Array(n));
+    return arr.map((x, i) => {
+      return i
+    });
+  }
+
+  const fillDeliveryWindows = window => {
+    const arr = Array.apply(null, Array(4));
+    return arr.map((x, i) => {
+      if (i * window + 9 < 21){
+        return i * window + 9;
+      }
+    });
+  }
+
+  const deliveryWindows = fillDeliveryWindows(windowLength);
+  const dollarsPerDelivery = 8;
+  const lowerDollersPerHour = 15;
+  const higherDollersPerHour = 20;
+  const nineAM = 9;
+  const ninePM = 21;
+
+  //builds driver object
+  const data = [...uniqueDrivers].map(driver => {
+    return {'name': driver, 'day': fillArrayWithNumbers(31)}
+  })
+
   //iterate drivers
-  for ( let i = 0; i < data.length-1; i++ ) {
-    workerMonthTotal[i] = {'name': data[i].name, 'count': 0};
+  data.map(driver => {
 
-    data[i].whatWeOwe = 0;
+    const month = fillArrayWithNumbers(31)
+    driver.whatWeOwe = 0;
     //iterate days
-    for ( let j = 0; j <= 30; j++ ) {
-      var whatWePaid = 0;
-      var whatWeOwe = 0;
-      var guarantee = 0;
-      var commission = 0;
+    month.map(day => {
 
-      data[i].day[j]={'day': j+1,'wave': []}
+      driver.day[day]={'day': day+1,'wave': []}
 
       //init daily properties
-      data[i].day[j].dailyTotalJobs = 0;
-      data[i].day[j].dayGuarantee = 0;
-      data[i].day[j].whatWeShouldPay = 0
+      driver.day[day].dailyTotalJobs = 0;
+      driver.day[day].dayGuarantee = 0;
+      driver.day[day].whatWeShouldPay = 0;
 
       //iterate delivery windows
-      for ( let k = 9; k < 21; k += windowLength ){
+      deliveryWindows.map(window => {
 
         var count = 0;
 
-        for ( let l = 0; l < novCsv.length; l++ ){
+        //iterate through each task in csv
+        parsedCsv.map(task => {
 
-          const taskWindow = new Date( novCsv[l].completeAfterTime ).getHours();
-          const taskDay = new Date( novCsv[l].completionTime );
-          const taskWorker = novCsv[l].workerName;
+          const taskWindow = new Date( task.completeAfterTime ).getHours();
+          const taskDay = new Date( task.completionTime );
+          const taskWorker = task.workerName;
 
-          if (  taskDay.getDate() === j+1 &&
-                taskWorker === data[i].name &&
-                taskWindow >= k &&
-                taskWindow < k + windowLength ){
+          //if task in day && correct driver && in the correct window, then increment
+          if (  taskDay.getDate() === day+1 &&
+                taskWorker === driver.name &&
+                taskWindow >= window &&
+                taskWindow < window + windowLength ){
             count++;
+
+            //checks if day is sat or sun for different morning guarantee
             if ( isWeekend(taskDay) ){
-              data[i].day[j].weekend = true;
+              driver.day[day].weekend = true;
             }
           }
-        }
+        });
 
-        data[i].day[j].wave[k] = { count, guarantee };
-        data[i].day[j].dailyTotalJobs += count;
+        driver.day[day].wave[window] = { count, guarantee: 0 };
+        driver.day[day].dailyTotalJobs += count;
 
-        workerMonthTotal[i].count += count;
-
-        if ( parseInt( data[i].day[j].wave[k].count ) > 0 ){
-          if (( data[i].day[j].weekend && k === 9 ) || k === 21-windowLength ){
-            data[i].day[j].wave[k].guarantee = ( 20 * windowLength )
-            data[i].day[j].dayGuarantee += ( 20 * windowLength )
+        //if driver worked today
+        if ( parseInt( driver.day[day].wave[window].count ) > 0 ){
+          //if (its the weekend AND the morning window) or the night window, guarantee is $20/hr
+          if (( driver.day[day].weekend && window === nineAM ) || window === ninePM-windowLength ){
+            //adds guaratee for just the window for discrepency pay
+            driver.day[day].wave[window].guarantee = ( higherDollersPerHour * windowLength )
+            //adds guarantee to entire day for what was actually paid
+            driver.day[day].dayGuarantee += ( higherDollersPerHour * windowLength )
+            //else $15/hr
           } else {
-            data[i].day[j].wave[k].guarantee = ( 15 * windowLength )
-            data[i].day[j].dayGuarantee += ( 15 * windowLength )
+            driver.day[day].wave[window].guarantee = ( lowerDollersPerHour * windowLength )
+            driver.day[day].dayGuarantee += ( lowerDollersPerHour * windowLength )
           }
         }
-
-        if (( data[i].day[j].wave[k].count * 8 ) > data[i].day[j].wave[k].guarantee ){
-          data[i].day[j].whatWeShouldPay += data[i].day[j].wave[k].count*8
+        //if $8/delivery IN A WINDOW is greater than hourly rate FOR JUST THAT WINDOW (discrepency pay)
+        if (( driver.day[day].wave[window].count * dollarsPerDelivery ) > driver.day[day].wave[window].guarantee ){
+          //we should pay $8/delivery for that window
+          driver.day[day].whatWeShouldPay += driver.day[day].wave[window].count*dollarsPerDelivery
         } else {
-          data[i].day[j].whatWeShouldPay += data[i].day[j].wave[k].guarantee
+          //else hourly for that window
+          driver.day[day].whatWeShouldPay += driver.day[day].wave[window].guarantee
         }
-      }
-
-      if (( data[i].day[j].dailyTotalJobs ) * 8 > data[i].day[j].dayGuarantee ){
-        data[i].day[j].whatWePaid = ( data[i].day[j].dailyTotalJobs )*8
+      })
+      //if $8 per delivery at end of the day is greater than sum of hourly guarantees (what was actually paid)
+      if (( driver.day[day].dailyTotalJobs ) * dollarsPerDelivery > driver.day[day].dayGuarantee ){
+        //they were paid $8/delivery
+        driver.day[day].whatWePaid = ( driver.day[day].dailyTotalJobs )*dollarsPerDelivery
       } else {
-        data[i].day[j].whatWePaid = data[i].day[j].dayGuarantee
+        //else they were paid hourly minimum for the whole day
+        driver.day[day].whatWePaid = driver.day[day].dayGuarantee
       }
-    data[i].whatWeOwe += data[i].day[j].whatWeShouldPay - data[i].day[j].whatWePaid;
-    }
-  console.log ( `${data[i].name}: owed \$${data[i].whatWeOwe}
+    //what we owe = what we shouldve paid minus what we did pay(duh)
+    driver.whatWeOwe += driver.day[day].whatWeShouldPay - driver.day[day].whatWePaid;
+  })
+  if (driver.whatWeOwe){
+    console.log ( `${driver.name}: owed $${driver.whatWeOwe}
 (if feb apr or may ignore days around holidays)
 ---------------------
 day:  did pay\t-   should pay \t-\towe` )
-  for(let m = 0; m < 31; m++){
-    console.log(`${m+1}:\t$${data[i].day[m].whatWePaid}\t-\t$${data[i].day[m].whatWeShouldPay}\t-\t$${data[i].day[m].whatWeShouldPay-data[i].day[m].whatWePaid}`)
-  }
+  month.map(day => {
+    console.log(`${ day+1 }: \t$${ driver.day[day].whatWePaid }\t-\t$${ driver.day[day].whatWeShouldPay }\t-\t$${ driver.day[day].whatWeShouldPay-driver.day[day].whatWePaid }`)
+  })
   console.log('\n')
-  }
+}
+})
 })
